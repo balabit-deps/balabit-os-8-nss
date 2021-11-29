@@ -1,3 +1,13 @@
+nss (2:3.49.1-1ubuntu1.6) focal-security; urgency=medium
+
+  * SECURITY UPDATE: heap overflow when verifying DSA/RSA-PSS DER-encoded
+    signatures
+    - debian/patches/CVE-2021-43527.patch: check signature lengths in
+      nss/lib/cryptohi/secvfy.c.
+    - CVE-2021-43527
+
+ -- Marc Deslauriers <marc.deslauriers@ubuntu.com>  Mon, 29 Nov 2021 07:15:58 -0500
+
 nss (2:3.49.1-1ubuntu1.5) focal-security; urgency=medium
 
   * SECURITY UPDATE: Out-of-bounds read

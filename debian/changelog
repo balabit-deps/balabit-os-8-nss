@@ -1,3 +1,18 @@
+nss (2:3.49.1-1ubuntu1.7) focal-security; urgency=medium
+
+  * SECURITY UPDATE: Denial of service through ChangeCipherSpec
+    - debian/patches/CVE-2020-25648-1.patch: reject CCS when 
+      compatibility is not specify or if many CCS in a row in
+      nss/gtests/ssl_gtest/ssl_tls13compat_unittest.cc,
+      nss/lib/ssl/ssl3con.c and nss/lib/ssl/sslimpl.h.
+    - debian/patches/CVE-2020-25648-2.patch: reject multiple CCS
+      packages but allow the first one in 
+      nss/gtests/ssl_gtest/ssl_tls13compat_unittest.cc,
+      nss/lib/ssl/ssl3con.c and nss/lib/ssl/sslimpl.h.
+    - CVE-2020-25648
+
+ -- David Fernandez Gonzalez <david.fernandezgonzalez@canonical.com>  Mon, 09 May 2022 15:35:11 +0200
+
 nss (2:3.49.1-1ubuntu1.6) focal-security; urgency=medium
 
   * SECURITY UPDATE: heap overflow when verifying DSA/RSA-PSS DER-encoded

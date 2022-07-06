@@ -1,3 +1,17 @@
+nss (2:3.49.1-1ubuntu1.8) focal-security; urgency=medium
+
+  * SECURITY UPDATE: Crash when handling empty pkcs7 sequence
+    - debian/patches/CVE-2022-22747.patch: check for missing signedData
+      field in nss/gtests/certdb_gtest/decode_certs_unittest.cc,
+      nss/lib/pkcs7/certread.c.
+    - CVE-2022-22747
+  * SECURITY UPDATE: Free of uninitialized pointer in lg_init
+    - debian/patches/CVE-2022-34480.patch: rearrange frees in
+      nss/lib/softoken/legacydb/lginit.c.
+    - CVE-2022-34480
+
+ -- Marc Deslauriers <marc.deslauriers@ubuntu.com>  Wed, 06 Jul 2022 07:23:47 -0400
+
 nss (2:3.49.1-1ubuntu1.7) focal-security; urgency=medium
 
   * SECURITY UPDATE: Denial of service through ChangeCipherSpec

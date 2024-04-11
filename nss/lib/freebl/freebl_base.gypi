@@ -4,7 +4,6 @@
 {
   'sources': [
     'aeskeywrap.c',
-    'alg2268.c',
     'cmac.c',
     'alghmac.c',
     'arcfive.c',
@@ -35,12 +34,22 @@
     'ecl/ecp_jac.c',
     'ecl/ecp_jm.c',
     'ecl/ecp_mont.c',
+    'ecl/ecp_secp256r1.c',
+    'ecl/ecp_secp384r1.c',
+    'ecl/ecp_secp384r1_wrap.c',
+    'ecl/ecp_secp521r1.c',
+    'ecl/ecp_secp521r1_wrap.c',
+    'verified/Hacl_P256.c',
+    'verified/Hacl_P384.c',
+    'verified/Hacl_P521.c',
     'fipsfreebl.c',
     'blinit.c',
     'freeblver.c',
     'gcm.c',
     'hmacct.c',
     'jpake.c',
+    'kyber.c',
+    'kyber-pqcrystals-ref.c',
     'ldvector.c',
     'md2.c',
     'md5.c',
@@ -54,13 +63,22 @@
     'rawhash.c',
     'rijndael.c',
     'rsa.c',
+    'rsa_blind.c',
     'rsapkcs.c',
-    'seed.c',
-    'sha512.c',
     'sha_fast.c',
     'shvfy.c',
     'sysrand.c',
     'tlsprfalg.c',
+    'secmpi.c',
+    'verified/Hacl_Hash_SHA3.c',
+    'sha3.c',
+    'shake.c',
+  ],
+  'defines': [
+    # For kyber-pqcrystals-ref.c. If we ever decide to support Kyber512 or
+    # Kyber1024, we'll need to build separate static libraries with different
+    # values of KYBER_K.
+    'KYBER_K=3',
   ],
   'conditions': [
     [ 'OS=="linux" or OS=="android"', {
@@ -69,11 +87,11 @@
           'sources': [
             'arcfour-amd64-gas.s',
             'mpi/mpi_amd64.c',
-            'mpi/mpi_amd64_gas.s',
+            'mpi/mpi_amd64_common.S',
             'mpi/mp_comba.c',
           ],
           'conditions': [
-            [ 'cc_is_clang==1 and fuzz!=1 and coverage!=1', {
+            [ 'cc_is_clang==1 and fuzz!=1 and coverage!=1 and force_integrated_as!=1', {
               'cflags': [
                 '-no-integrated-as',
               ],
@@ -96,6 +114,12 @@
             'mpi/mpi_arm.c',
           ],
         }],
+        [ 'target_arch=="ppc64le"', {
+          'sources': [
+            'chacha20poly1305-ppc.c',
+            'chacha20-ppc64le.S',
+          ],
+        }]
       ],
     }],
     [ 'OS=="win"', {
@@ -133,16 +157,23 @@
         }],
       ],
     }],
-    ['target_arch=="ia32" or target_arch=="x64" or target_arch=="arm64" or target_arch=="aarch64"', {
+    ['have_int128_support==1', {
       'sources': [
-        # All intel and 64-bit ARM architectures get the 64 bit version.
+        # All intel x64 and 64-bit ARM architectures get the 64 bit version.
         'ecl/curve25519_64.c',
-        'verified/Hacl_Curve25519.c',
+        'verified/Hacl_Curve25519_51.c',
       ],
     }, {
       'sources': [
-        # All other architectures get the generic 32 bit implementation (slow!)
+        # All other architectures get the generic 32 bit implementation.
         'ecl/curve25519_32.c',
+      ],
+    }],
+    ['(target_arch!="ppc64" and target_arch!="ppc64le") or disable_altivec==1', {
+      'sources': [
+        # Gyp does not support per-file cflags, so working around like this.
+        # ppc performance greatly benefits from specific flags.
+        'sha512.c',
       ],
     }],
     [ 'disable_chachapoly==0', {
@@ -151,36 +182,18 @@
       # choose the correct ChaCha implementation at runtime.
       'sources': [
         'verified/Hacl_Chacha20.c',
+        'verified/Hacl_Chacha20Poly1305_32.c',
+        'verified/Hacl_Poly1305_32.c',
       ],
-      'conditions': [
-        [ 'OS!="win"', {
-          'conditions': [
-            [ 'target_arch=="x64"', {
-              'sources': [
-                'verified/Hacl_Poly1305_64.c',
-              ],
-            }, {
-              # !Windows & !x64
-              'conditions': [
-                [ 'target_arch=="arm64" or target_arch=="aarch64"', {
-                  'sources': [
-                    'verified/Hacl_Poly1305_64.c',
-                  ],
-                }, {
-                  # !Windows & !x64 & !arm64 & !aarch64
-                  'sources': [
-                    'verified/Hacl_Poly1305_32.c',
-                  ],
-                }],
-              ],
-            }],
-          ],
-        }, {
-          # Windows
-          'sources': [
-            'verified/Hacl_Poly1305_32.c',
-          ],
-        }],
+    }],
+    [ 'disable_deprecated_seed==0', {
+      'sources': [
+        'deprecated/seed.c',
+      ],
+    }],
+    [ 'disable_deprecated_rc2==0', {
+      'sources': [
+        'deprecated/alg2268.c',
       ],
     }],
     [ 'fuzz==1', {
@@ -214,11 +227,20 @@
             'MP_ASSEMBLY_SQUARE',
             'MP_ASSEMBLY_DIV_2DX1D',
           ],
+        }, 'target_arch=="x64"', {
+          'sources': [
+            'mpi/mpi_amd64.c',
+            'mpi/mpi_amd64_common.S',
+            'mpi/mp_comba.c',
+          ],
+          'defines': [
+            'MP_IS_LITTLE_ENDIAN',
+            'MPI_AMD64',
+            'MP_ASSEMBLY_MULTIPLY',
+            'NSS_USE_COMBA',
+          ],
         }],
       ],
-    }],
-    [ 'have_int128_support==0', {
-        'sources': [ 'verified/FStar.c' ],
     }],
   ],
  'ldflags': [

@@ -1,18 +1,10 @@
 zlib data compression library
 
 URL: http://zlib.net/
-Version: 1.2.5
+Version: 1.3.1 (51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf)
 License: zlib License
 License File: http://zlib.net/zlib_license.html
 
 Description:
 
-NSS uses zlib in libSSL (for the DEFLATE compression method), modutil, and
-signtool.
-
-Local Modifications:
-
-- patches/prune-zlib.sh: run this shell script to remove unneeded files
-  from the zlib distribution.
-- patches/msvc-vsnprintf.patch: define HAVE_VSNPRINTF for Visual C++ 2008
-  (9.0) and later.
+NSS uses zlib in modutil and signtool.

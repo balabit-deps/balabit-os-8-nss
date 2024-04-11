@@ -41,10 +41,12 @@ extern SSL3ProtocolVersion
 dtls_TLSVersionToDTLSVersion(SSL3ProtocolVersion tlsv);
 extern SSL3ProtocolVersion
 dtls_DTLSVersionToTLSVersion(SSL3ProtocolVersion dtlsv);
-DTLSEpoch dtls_ReadEpoch(const ssl3CipherSpec *crSpec, const PRUint8 *hdr);
+DTLSEpoch dtls_ReadEpoch(const SSL3ProtocolVersion version, const DTLSEpoch specEpoch,
+                         const PRUint8 *hdr);
 extern PRBool dtls_IsRelevant(sslSocket *ss, const ssl3CipherSpec *spec,
                               const SSL3Ciphertext *cText,
                               sslSequenceNumber *seqNum);
 void dtls_ReceivedFirstMessageInFlight(sslSocket *ss);
 PRBool dtls_IsLongHeader(SSL3ProtocolVersion version, PRUint8 firstOctet);
+PRBool dtls_IsDtls13Ciphertext(SSL3ProtocolVersion version, PRUint8 firstOctet);
 #endif

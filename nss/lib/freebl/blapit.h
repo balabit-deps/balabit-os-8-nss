@@ -97,6 +97,10 @@ typedef int __BLAPI_DEPRECATED __attribute__((deprecated));
 #define SHA256_LENGTH 32     /* bytes */
 #define SHA384_LENGTH 48     /* bytes */
 #define SHA512_LENGTH 64     /* bytes */
+#define SHA3_224_LENGTH 28   /* bytes */
+#define SHA3_256_LENGTH 32   /* bytes */
+#define SHA3_384_LENGTH 48   /* bytes */
+#define SHA3_512_LENGTH 64   /* bytes */
 #define BLAKE2B512_LENGTH 64 /* Bytes */
 #define HASH_LENGTH_MAX SHA512_LENGTH
 
@@ -104,19 +108,23 @@ typedef int __BLAPI_DEPRECATED __attribute__((deprecated));
  * Input block size for each hash algorithm.
  */
 
-#define MD2_BLOCK_LENGTH 64      /* bytes */
-#define MD5_BLOCK_LENGTH 64      /* bytes */
-#define SHA1_BLOCK_LENGTH 64     /* bytes */
-#define SHA224_BLOCK_LENGTH 64   /* bytes */
-#define SHA256_BLOCK_LENGTH 64   /* bytes */
-#define SHA384_BLOCK_LENGTH 128  /* bytes */
-#define SHA512_BLOCK_LENGTH 128  /* bytes */
-#define BLAKE2B_BLOCK_LENGTH 128 /* Bytes */
-#define HASH_BLOCK_LENGTH_MAX SHA512_BLOCK_LENGTH
+#define MD2_BLOCK_LENGTH 64       /* bytes */
+#define MD5_BLOCK_LENGTH 64       /* bytes */
+#define SHA1_BLOCK_LENGTH 64      /* bytes */
+#define SHA224_BLOCK_LENGTH 64    /* bytes */
+#define SHA256_BLOCK_LENGTH 64    /* bytes */
+#define SHA384_BLOCK_LENGTH 128   /* bytes */
+#define SHA512_BLOCK_LENGTH 128   /* bytes */
+#define SHA3_224_BLOCK_LENGTH 144 /* bytes */
+#define SHA3_256_BLOCK_LENGTH 136 /* bytes */
+#define SHA3_384_BLOCK_LENGTH 104 /* bytes */
+#define SHA3_512_BLOCK_LENGTH 72  /* bytes */
+#define BLAKE2B_BLOCK_LENGTH 128  /* Bytes */
+#define HASH_BLOCK_LENGTH_MAX SHA3_224_BLOCK_LENGTH
 
-#define AES_KEY_WRAP_IV_BYTES 8
-#define AES_KEY_WRAP_BLOCK_SIZE 8 /* bytes */
-#define AES_BLOCK_SIZE 16         /* bytes */
+#define AES_BLOCK_SIZE 16 /* bytes */
+#define AES_KEY_WRAP_BLOCK_SIZE (AES_BLOCK_SIZE / 2)
+#define AES_KEY_WRAP_IV_BYTES AES_KEY_WRAP_BLOCK_SIZE
 
 #define AES_128_KEY_LENGTH 16 /* bytes */
 #define AES_192_KEY_LENGTH 24 /* bytes */
@@ -199,6 +207,39 @@ typedef int __BLAPI_DEPRECATED __attribute__((deprecated));
  */
 #define PQG_INDEX_TO_PBITS(j) (((unsigned)(j) > 8) ? -1 : (512 + 64 * (j)))
 
+/* When we are generating a gcm iv from a random number, we need to calculate
+ * an acceptable iteration count to avoid birthday attacks. (randomly
+ * generating the same IV twice).
+ *
+ * We use the approximation n = sqrt(2*m*p) to find an acceptable n given m
+ * and p.
+ * where n is the number of iterations.
+ *       m is the number of possible random values.
+ *       p is the probability of collision (0-1).
+ *
+ * We want to calculate the constant number GCM_IV_RANDOM_BIRTHDAY_BITS, which
+ * is the number of bits we subtract off of the length of the iv (in bits) to
+ * get a safe count value (log2).
+ *
+ * Since we do the calculation in bits, so we need to take the whole
+ * equation log2:
+ *       log2 n = (1+(log2 m)+(log2 p))/2
+ * Since p < 1, log2 p is negative. Also note that the length of the iv in
+ * bits is log2 m, so if we set GCMIV_RANDOM_BIRTHDAY_BITS =- log2 p - 1.
+ * then we can calculate a safe counter value with:
+ *        n = 2^((ivLenBits - GCMIV_RANDOM_BIRTHDAY_BITS)/2)
+ *
+ * If we arbitrarily set p = 10^-18 (1 chance in trillion trillion operation)
+ * we get GCMIV_RANDOM_BIRTHDAY_BITS = -(-18)/.301 -1 = 59 (.301 = log10 2)
+ * GCMIV_RANDOM_BIRTHDAY_BITS should be at least 59, call it a round 64. NOTE:
+ * the variable IV size for TLS is 64 bits, which explains why it's not safe
+ * to use a random value for the nonce in TLS. */
+#define GCMIV_RANDOM_BIRTHDAY_BITS 64
+
+/* flag to tell BLAPI_Verify* to rerun the post and integrity tests */
+#define BLAPI_FIPS_RERUN_FLAG '\377'        /* 0xff, 255 invalide code for UFT8/ASCII */
+#define BLAPI_FIPS_RERUN_FLAG_STRING "\377" /* The above as a C string */
+
 /***************************************************************************
 ** Opaque objects
 */
@@ -214,8 +255,11 @@ struct MD5ContextStr;
 struct SHA1ContextStr;
 struct SHA256ContextStr;
 struct SHA512ContextStr;
+struct SHA3ContextStr;
+struct SHAKEContextStr;
 struct AESKeyWrapContextStr;
 struct SEEDContextStr;
+struct ChaCha20ContextStr;
 struct ChaCha20Poly1305ContextStr;
 struct Blake2bContextStr;
 
@@ -234,8 +278,16 @@ typedef struct SHA256ContextStr SHA224Context;
 typedef struct SHA512ContextStr SHA512Context;
 /* SHA384Context is really a SHA512ContextStr.  This is not a mistake. */
 typedef struct SHA512ContextStr SHA384Context;
+/* All SHA3_*Contexts are the same.  This is not a mistake. */
+typedef struct SHA3ContextStr SHA3_224Context;
+typedef struct SHA3ContextStr SHA3_256Context;
+typedef struct SHA3ContextStr SHA3_384Context;
+typedef struct SHA3ContextStr SHA3_512Context;
+typedef struct SHAKEContextStr SHAKE_128Context;
+typedef struct SHAKEContextStr SHAKE_256Context;
 typedef struct AESKeyWrapContextStr AESKeyWrapContext;
 typedef struct SEEDContextStr SEEDContext;
+typedef struct ChaCha20ContextStr ChaCha20Context;
 typedef struct ChaCha20Poly1305ContextStr ChaCha20Poly1305Context;
 typedef struct Blake2bContextStr BLAKE2BContext;
 
@@ -340,7 +392,9 @@ typedef struct DHPrivateKeyStr DHPrivateKey;
 */
 
 typedef enum { ec_params_explicit,
-               ec_params_named
+               ec_params_named,
+               ec_params_edwards_named,
+               ec_params_montgomery_named,
 } ECParamsType;
 
 typedef enum { ec_field_GFp = 1,

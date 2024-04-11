@@ -8,34 +8,14 @@ file and going into FIPS mode. libnss is not a FIPS
 certified library.
 Bug-Ubuntu: http://bugs.launchpad.net/bugs/1837734
 Forwarded: not-needed
+Updated: 2024-03-21
 
-diff --git a/nss/lib/freebl/nsslowhash.c b/nss/lib/freebl/nsslowhash.c
-index 22f9781..8433377 100644
---- a/nss/lib/freebl/nsslowhash.c
-+++ b/nss/lib/freebl/nsslowhash.c
-@@ -27,11 +27,13 @@ static int
- nsslow_GetFIPSEnabled(void)
- {
- #ifdef LINUX
--    FILE *f;
-+    FILE *f = NULL;
-     char d;
-     size_t size;
- 
-+#if 0
-     f = fopen("/proc/sys/crypto/fips_enabled", "r");
-+#endif
-     if (!f)
-         return 0;
- 
-diff --git a/nss/lib/sysinit/nsssysinit.c b/nss/lib/sysinit/nsssysinit.c
-index bd0fac2..81f9b17 100644
 --- a/nss/lib/sysinit/nsssysinit.c
 +++ b/nss/lib/sysinit/nsssysinit.c
-@@ -168,11 +168,13 @@ getFIPSEnv(void)
- static PRBool
+@@ -171,11 +171,13 @@ static PRBool
  getFIPSMode(void)
  {
+ #ifndef NSS_FIPS_DISABLED
 -    FILE *f;
 +    FILE *f = NULL;
      char d;
@@ -47,3 +27,35 @@ index bd0fac2..81f9b17 100644
      if (!f) {
          /* if we don't have a proc flag, fall back to the
       * environment variable */
+--- a/nss/lib/freebl/stubs.c
++++ b/nss/lib/freebl/stubs.c
+@@ -737,10 +737,12 @@ NSS_GetSystemFIPSEnabled_stub(void)
+  * as they become available/known */
+ #ifdef LINUX
+     {
+-        FILE *f;
++        FILE *f = NULL;
+         char d;
+         size_t size;
++#if 0
+         f = fopen("/proc/sys/crypto/fips_enabled", "r");
++#endif
+         if (!f)
+             return PR_FALSE;
+ 
+--- a/nss/lib/util/secport.c
++++ b/nss/lib/util/secport.c
+@@ -905,10 +905,12 @@ NSS_GetSystemFIPSEnabled(void)
+  * as they become available/known */
+ #ifdef LINUX
+     {
+-        FILE *f;
++        FILE *f = NULL;
+         char d;
+         size_t size;
++#if 0
+         f = fopen("/proc/sys/crypto/fips_enabled", "r");
++#endif
+         if (!f)
+             return PR_FALSE;
+ 

@@ -1,4 +1,4 @@
 repo: 9949429068caa6bb8827a8ceeaa7c605d722f47f
-node: b6d96df59e73c5875686dc5ab2d84f7406aa1e6b
-branch: NSS_3_49_BRANCH
-tag: NSS_3_49_1_RTM
+node: 47e47ad179cdf4dfc1e0c5cd75cb5711bb2a604a
+branch: NSS_3_98_BRANCH
+tag: NSS_3_98_RTM

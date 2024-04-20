@@ -5,6 +5,8 @@
  * This file contains functions to manage asymetric keys, (public and
  * private keys).
  */
+#include <stddef.h>
+
 #include "seccomon.h"
 #include "secmod.h"
 #include "secmodi.h"
@@ -42,6 +44,9 @@ pk11_MakeIDFromPublicKey(SECKEYPublicKey *pubKey)
         case ecKey:
             pubKeyIndex = &pubKey->u.ec.publicValue;
             break;
+        case kyberKey:
+            pubKeyIndex = &pubKey->u.kyber.publicValue;
+            break;
         default:
             return NULL;
     }
@@ -71,6 +76,7 @@ PK11_ImportPublicKey(PK11SlotInfo *slot, SECKEYPublicKey *pubKey,
     CK_ATTRIBUTE theTemplate[11];
     CK_ATTRIBUTE *signedattr = NULL;
     CK_ATTRIBUTE *attrs = theTemplate;
+    CK_NSS_KEM_PARAMETER_SET_TYPE kemParams;
     SECItem *ckaId = NULL;
     SECItem *pubValue = NULL;
     int signedcount = 0;
@@ -214,6 +220,25 @@ PK11_ImportPublicKey(PK11SlotInfo *slot, SECKEYPublicKey *pubKey,
                     attrs++;
                 }
                 break;
+            case kyberKey:
+                keyType = CKK_NSS_KYBER;
+                switch (pubKey->u.kyber.params) {
+                    case params_kyber768_round3:
+                    case params_kyber768_round3_test_mode:
+                        kemParams = CKP_NSS_KYBER_768_ROUND3;
+                        break;
+                    default:
+                        kemParams = CKP_INVALID_ID;
+                        break;
+                }
+                PK11_SETATTRS(attrs, CKA_NSS_PARAMETER_SET,
+                              &kemParams,
+                              sizeof(CK_NSS_KEM_PARAMETER_SET_TYPE));
+                attrs++;
+                PK11_SETATTRS(attrs, CKA_VALUE, pubKey->u.kyber.publicValue.data,
+                              pubKey->u.kyber.publicValue.len);
+                attrs++;
+                break;
             default:
                 if (ckaId) {
                     SECITEM_FreeItem(ckaId, PR_TRUE);
@@ -223,14 +248,14 @@ PK11_ImportPublicKey(PK11SlotInfo *slot, SECKEYPublicKey *pubKey,
         }
         templateCount = attrs - theTemplate;
         PORT_Assert(templateCount <= (sizeof(theTemplate) / sizeof(CK_ATTRIBUTE)));
-        if (pubKey->keyType != ecKey) {
+        if (pubKey->keyType != ecKey && pubKey->keyType != kyberKey) {
             PORT_Assert(signedattr);
             signedcount = attrs - signedattr;
             for (attrs = signedattr; signedcount; attrs++, signedcount--) {
                 pk11_SignedToUnsigned(attrs);
             }
         }
-        rv = PK11_CreateNewObject(slot, CK_INVALID_SESSION, theTemplate,
+        rv = PK11_CreateNewObject(slot, CK_INVALID_HANDLE, theTemplate,
                                   templateCount, isToken, &objectID);
         if (ckaId) {
             SECITEM_FreeItem(ckaId, PR_TRUE);
@@ -595,7 +620,7 @@ PK11_ExtractPublicKey(PK11SlotInfo *slot, KeyType keyType, CK_OBJECT_HANDLE id)
     CK_ATTRIBUTE template[8];
     CK_ATTRIBUTE *attrs = template;
     CK_ATTRIBUTE *modulus, *exponent, *base, *prime, *subprime, *value;
-    CK_ATTRIBUTE *ecparams;
+    CK_ATTRIBUTE *ecparams, *kemParams;
 
     /* if we didn't know the key type, get it */
     if (keyType == nullKey) {
@@ -616,6 +641,9 @@ PK11_ExtractPublicKey(PK11SlotInfo *slot, KeyType keyType, CK_OBJECT_HANDLE id)
                 break;
             case CKK_EC:
                 keyType = ecKey;
+                break;
+            case CKK_NSS_KYBER:
+                keyType = kyberKey;
                 break;
             default:
                 PORT_SetError(SEC_ERROR_BAD_KEY);
@@ -771,6 +799,40 @@ PK11_ExtractPublicKey(PK11SlotInfo *slot, KeyType keyType, CK_OBJECT_HANDLE id)
                                            &pubKey->u.ec.DEREncodedParams, value,
                                            &pubKey->u.ec.publicValue);
             break;
+        case kyberKey:
+            value = attrs;
+            PK11_SETATTRS(attrs, CKA_VALUE, NULL, 0);
+            attrs++;
+            kemParams = attrs;
+            PK11_SETATTRS(attrs, CKA_NSS_PARAMETER_SET, NULL, 0);
+            attrs++;
+            templateCount = attrs - template;
+            PR_ASSERT(templateCount <= sizeof(template) / sizeof(CK_ATTRIBUTE));
+
+            crv = PK11_GetAttributes(arena, slot, id, template, templateCount);
+            if (crv != CKR_OK)
+                break;
+
+            if ((keyClass != CKO_PUBLIC_KEY) || (pk11KeyType != CKK_NSS_KYBER)) {
+                crv = CKR_OBJECT_HANDLE_INVALID;
+                break;
+            }
+
+            if (kemParams->ulValueLen != sizeof(CK_NSS_KEM_PARAMETER_SET_TYPE)) {
+                crv = CKR_OBJECT_HANDLE_INVALID;
+                break;
+            }
+            CK_NSS_KEM_PARAMETER_SET_TYPE *pPK11Params = kemParams->pValue;
+            switch (*pPK11Params) {
+                case CKP_NSS_KYBER_768_ROUND3:
+                    pubKey->u.kyber.params = params_kyber768_round3;
+                    break;
+                default:
+                    pubKey->u.kyber.params = params_kyber_invalid;
+                    break;
+            }
+            crv = pk11_Attr2SecItem(arena, value, &pubKey->u.kyber.publicValue);
+            break;
         case fortezzaKey:
         case nullKey:
         default:
@@ -823,6 +885,9 @@ PK11_MakePrivKey(PK11SlotInfo *slot, KeyType keyType,
                 break;
             case CKK_EC:
                 keyType = ecKey;
+                break;
+            case CKK_NSS_KYBER:
+                keyType = kyberKey;
                 break;
             default:
                 break;
@@ -1085,7 +1150,7 @@ pk11_loadPrivKeyWithFlags(PK11SlotInfo *slot, SECKEYPrivateKey *privKey,
     }
 
     /* now Store the puppies */
-    rv = PK11_CreateNewObject(slot, CK_INVALID_SESSION, privTemplate,
+    rv = PK11_CreateNewObject(slot, CK_INVALID_HANDLE, privTemplate,
                               count, token, &objectID);
     PORT_FreeArena(arena, PR_TRUE);
     if (rv != SECSuccess) {
@@ -1207,6 +1272,17 @@ PK11_GenerateKeyPairWithOpFlags(PK11SlotInfo *slot, CK_MECHANISM_TYPE type,
     };
     SECKEYECParams *ecParams;
 
+    CK_ATTRIBUTE kyberPubTemplate[] = {
+        { CKA_NSS_PARAMETER_SET, NULL, 0 },
+        { CKA_TOKEN, NULL, 0 },
+        { CKA_DERIVE, NULL, 0 },
+        { CKA_WRAP, NULL, 0 },
+        { CKA_VERIFY, NULL, 0 },
+        { CKA_VERIFY_RECOVER, NULL, 0 },
+        { CKA_ENCRYPT, NULL, 0 },
+        { CKA_MODIFIABLE, NULL, 0 },
+    };
+
     /*CK_ULONG key_size = 0;*/
     CK_ATTRIBUTE *pubTemplate;
     int privCount = 0;
@@ -1214,6 +1290,7 @@ PK11_GenerateKeyPairWithOpFlags(PK11SlotInfo *slot, CK_MECHANISM_TYPE type,
     PK11RSAGenParams *rsaParams;
     SECKEYPQGParams *dsaParams;
     SECKEYDHParams *dhParams;
+    CK_NSS_KEM_PARAMETER_SET_TYPE *kemParams;
     CK_MECHANISM mechanism;
     CK_MECHANISM test_mech;
     CK_MECHANISM test_mech2;
@@ -1411,6 +1488,17 @@ PK11_GenerateKeyPairWithOpFlags(PK11SlotInfo *slot, CK_MECHANISM_TYPE type,
                 test_mech2.mechanism = CKM_ECDSA;
             }
             break;
+        case CKM_NSS_KYBER_KEY_PAIR_GEN:
+            kemParams = (CK_NSS_KEM_PARAMETER_SET_TYPE *)param;
+            attrs = kyberPubTemplate;
+            PK11_SETATTRS(attrs, CKA_NSS_PARAMETER_SET,
+                          kemParams,
+                          sizeof(CK_NSS_KEM_PARAMETER_SET_TYPE));
+            attrs++;
+            pubTemplate = kyberPubTemplate;
+            keyType = kyberKey;
+            test_mech.mechanism = CKM_NSS_KYBER;
+            break;
         default:
             PORT_SetError(SEC_ERROR_BAD_KEY);
             return NULL;
@@ -1520,13 +1608,13 @@ PK11_GenerateKeyPairWithOpFlags(PK11SlotInfo *slot, CK_MECHANISM_TYPE type,
         restore = PR_TRUE;
     } else {
         session_handle = slot->session;
-        if (session_handle != CK_INVALID_SESSION)
+        if (session_handle != CK_INVALID_HANDLE)
             PK11_EnterSlotMonitor(slot);
         restore = PR_FALSE;
         haslock = PR_TRUE;
     }
 
-    if (session_handle == CK_INVALID_SESSION) {
+    if (session_handle == CK_INVALID_HANDLE) {
         PORT_SetError(SEC_ERROR_BAD_DATA);
         return NULL;
     }
@@ -1901,12 +1989,12 @@ try_faulty_3des:
     }
 
     /* if we are unable to import the key and the pbeMechType is
-     * CKM_NETSCAPE_PBE_SHA1_TRIPLE_DES_CBC, then it is possible that
+     * CKM_NSS_PBE_SHA1_TRIPLE_DES_CBC, then it is possible that
      * the encrypted blob was created with a buggy key generation method
      * which is described in the PKCS 12 implementation notes.  So we
      * need to try importing via that method.
      */
-    if ((pbeMechType == CKM_NETSCAPE_PBE_SHA1_TRIPLE_DES_CBC) && (!faulty3DES)) {
+    if ((pbeMechType == CKM_NSS_PBE_SHA1_TRIPLE_DES_CBC) && (!faulty3DES)) {
         /* clean up after ourselves before redoing the key generation. */
 
         PK11_FreeSymKey(key);
@@ -1967,14 +2055,20 @@ PK11_ExportPrivateKeyInfo(CERTCertificate *cert, void *wincx)
     return pki;
 }
 
+/* V2 refers to PKCS #5 V2 here. If a PKCS #5 v1 or PKCS #12 pbe is passed
+ * for pbeTag, then encTag and hashTag are ignored. If pbe is an encryption
+ * algorithm, then PKCS #5 V2 is used with prfTag for the prf. If prfTag isn't
+ * supplied prf will be SEC_OID_HMAC_SHA1 */
 SECKEYEncryptedPrivateKeyInfo *
-PK11_ExportEncryptedPrivKeyInfo(
+PK11_ExportEncryptedPrivKeyInfoV2(
     PK11SlotInfo *slot,   /* optional, encrypt key in this slot */
-    SECOidTag algTag,     /* encrypt key with this algorithm */
+    SECOidTag pbeAlg,     /* PBE algorithm to encrypt the with key */
+    SECOidTag encAlg,     /* Encryption algorithm to Encrypt the key with */
+    SECOidTag prfAlg,     /* Hash algorithm for PRF */
     SECItem *pwitem,      /* password for PBE encryption */
     SECKEYPrivateKey *pk, /* encrypt this private key */
     int iteration,        /* interations for PBE alg */
-    void *wincx)          /* context for password callback ? */
+    void *pwArg)          /* context for password callback */
 {
     SECKEYEncryptedPrivateKeyInfo *epki = NULL;
     PLArenaPool *arena = NULL;
@@ -1995,7 +2089,7 @@ PK11_ExportEncryptedPrivKeyInfo(
         return NULL;
     }
 
-    algid = sec_pkcs5CreateAlgorithmID(algTag, SEC_OID_UNKNOWN, SEC_OID_UNKNOWN,
+    algid = sec_pkcs5CreateAlgorithmID(pbeAlg, encAlg, prfAlg,
                                        &pbeAlgTag, 0, NULL, iteration);
     if (algid == NULL) {
         return NULL;
@@ -2024,7 +2118,7 @@ PK11_ExportEncryptedPrivKeyInfo(
             slot = pk->pkcs11Slot;
         }
     }
-    key = PK11_PBEKeyGen(slot, algid, pwitem, PR_FALSE, wincx);
+    key = PK11_PBEKeyGen(slot, algid, pwitem, PR_FALSE, pwArg);
     if (key == NULL) {
         rv = SECFailure;
         goto loser;
@@ -2119,22 +2213,57 @@ loser:
 }
 
 SECKEYEncryptedPrivateKeyInfo *
+PK11_ExportEncryptedPrivKeyInfo(
+    PK11SlotInfo *slot,   /* optional, encrypt key in this slot */
+    SECOidTag algTag,     /* PBE algorithm to encrypt the with key */
+    SECItem *pwitem,      /* password for PBE encryption */
+    SECKEYPrivateKey *pk, /* encrypt this private key */
+    int iteration,        /* interations for PBE alg */
+    void *pwArg)          /* context for password callback */
+{
+    return PK11_ExportEncryptedPrivKeyInfoV2(slot, algTag, SEC_OID_UNKNOWN,
+                                             SEC_OID_UNKNOWN, pwitem, pk,
+                                             iteration, pwArg);
+}
+
+/* V2 refers to PKCS #5 V2 here. If a PKCS #5 v1 or PKCS #12 pbe is passed
+ * for pbeTag, then encTag and hashTag are ignored. If pbe is an encryption
+ * algorithm, then PKCS #5 V2 is used with prfTag for the prf. If prfTag isn't
+ * supplied prf will be SEC_OID_HMAC_SHA1 */
+SECKEYEncryptedPrivateKeyInfo *
+PK11_ExportEncryptedPrivateKeyInfoV2(
+    PK11SlotInfo *slot,    /* optional, encrypt key in this slot */
+    SECOidTag pbeAlg,      /* PBE algorithm to encrypt the with key */
+    SECOidTag encAlg,      /* Encryption algorithm to Encrypt the key with */
+    SECOidTag prfAlg,      /* HMAC algorithm for PRF*/
+    SECItem *pwitem,       /* password for PBE encryption */
+    CERTCertificate *cert, /* wrap priv key for this user cert */
+    int iteration,         /* interations for PBE alg */
+    void *pwArg)           /* context for password callback */
+{
+    SECKEYEncryptedPrivateKeyInfo *epki = NULL;
+    SECKEYPrivateKey *pk = PK11_FindKeyByAnyCert(cert, pwArg);
+    if (pk != NULL) {
+        epki = PK11_ExportEncryptedPrivKeyInfoV2(slot, pbeAlg, encAlg, prfAlg,
+                                                 pwitem, pk, iteration,
+                                                 pwArg);
+        SECKEY_DestroyPrivateKey(pk);
+    }
+    return epki;
+}
+
+SECKEYEncryptedPrivateKeyInfo *
 PK11_ExportEncryptedPrivateKeyInfo(
     PK11SlotInfo *slot,    /* optional, encrypt key in this slot */
     SECOidTag algTag,      /* encrypt key with this algorithm */
     SECItem *pwitem,       /* password for PBE encryption */
     CERTCertificate *cert, /* wrap priv key for this user cert */
     int iteration,         /* interations for PBE alg */
-    void *wincx)           /* context for password callback ? */
+    void *pwArg)           /* context for password callback */
 {
-    SECKEYEncryptedPrivateKeyInfo *epki = NULL;
-    SECKEYPrivateKey *pk = PK11_FindKeyByAnyCert(cert, wincx);
-    if (pk != NULL) {
-        epki = PK11_ExportEncryptedPrivKeyInfo(slot, algTag, pwitem, pk,
-                                               iteration, wincx);
-        SECKEY_DestroyPrivateKey(pk);
-    }
-    return epki;
+    return PK11_ExportEncryptedPrivateKeyInfoV2(slot, algTag, SEC_OID_UNKNOWN,
+                                                SEC_OID_UNKNOWN, pwitem, cert,
+                                                iteration, pwArg);
 }
 
 SECItem *
@@ -2271,7 +2400,7 @@ PK11_ConvertSessionPrivKeyToTokenPrivKey(SECKEYPrivateKey *privk, void *wincx)
 
     PK11_Authenticate(slot, PR_TRUE, wincx);
     rwsession = PK11_GetRWSession(slot);
-    if (rwsession == CK_INVALID_SESSION) {
+    if (rwsession == CK_INVALID_HANDLE) {
         PORT_SetError(SEC_ERROR_BAD_DATA);
         return NULL;
     }
@@ -2548,7 +2677,7 @@ PK11_ListPublicKeysInSlot(PK11SlotInfo *slot, char *nickname)
     CK_ATTRIBUTE *attrs;
     CK_BBOOL ckTrue = CK_TRUE;
     CK_OBJECT_CLASS keyclass = CKO_PUBLIC_KEY;
-    unsigned int tsize = 0;
+    size_t tsize = 0;
     int objCount = 0;
     CK_OBJECT_HANDLE *key_ids;
     SECKEYPublicKeyList *keys;
@@ -2596,7 +2725,7 @@ PK11_ListPrivKeysInSlot(PK11SlotInfo *slot, char *nickname, void *wincx)
     CK_ATTRIBUTE *attrs;
     CK_BBOOL ckTrue = CK_TRUE;
     CK_OBJECT_CLASS keyclass = CKO_PRIVATE_KEY;
-    unsigned int tsize = 0;
+    size_t tsize = 0;
     int objCount = 0;
     CK_OBJECT_HANDLE *key_ids;
     SECKEYPrivateKeyList *keys;

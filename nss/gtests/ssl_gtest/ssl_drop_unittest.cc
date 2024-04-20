@@ -72,11 +72,12 @@ static void CheckAcks(const std::shared_ptr<TlsRecordRecorder>& acks,
   const DataBuffer& buf = acks->record(index).buffer;
   size_t offset = 2;
   uint64_t len;
-
-  EXPECT_EQ(2 + expected.size() * 8, buf.len());
+  // RFC 9147 -  7. ACK Message.
+  // 16 bytes correspond to the length of the epoch and the length of the seqNum
+  EXPECT_EQ(2 + expected.size() * 16, buf.len());
   ASSERT_TRUE(buf.Read(0, 2, &len));
   ASSERT_EQ(static_cast<size_t>(len + 2), buf.len());
-  if ((2 + expected.size() * 8) != buf.len()) {
+  if ((2 + expected.size() * 16) != buf.len()) {
     while (offset < buf.len()) {
       uint64_t ack;
       ASSERT_TRUE(buf.Read(offset, 8, &ack));
@@ -88,9 +89,13 @@ static void CheckAcks(const std::shared_ptr<TlsRecordRecorder>& acks,
 
   for (size_t i = 0; i < expected.size(); ++i) {
     uint64_t a = expected[i];
-    uint64_t ack;
-    ASSERT_TRUE(buf.Read(offset, 8, &ack));
+    uint64_t ackEpoch;
+    uint64_t ackSeq;
+    ASSERT_TRUE(buf.Read(offset, 8, &ackEpoch));
     offset += 8;
+    ASSERT_TRUE(buf.Read(offset, 8, &ackSeq));
+    offset += 8;
+    uint64_t ack = (ackEpoch << 48) | ackSeq;
     if (a != ack) {
       ADD_FAILURE() << "Wrong ack " << i << " expected=0x" << std::hex << a
                     << " got=0x" << ack << std::dec;
@@ -619,55 +624,6 @@ TEST_P(TlsDropDatagram13, ReorderServerEE) {
 
 // The client sends an out of order non-handshake message
 // but with the handshake key.
-class TlsSendCipherSpecCapturer {
- public:
-  TlsSendCipherSpecCapturer(const std::shared_ptr<TlsAgent>& agent)
-      : agent_(agent), send_cipher_specs_() {
-    EXPECT_EQ(SECSuccess,
-              SSL_SecretCallback(agent_->ssl_fd(), SecretCallback, this));
-  }
-
-  std::shared_ptr<TlsCipherSpec> spec(size_t i) {
-    if (i >= send_cipher_specs_.size()) {
-      return nullptr;
-    }
-    return send_cipher_specs_[i];
-  }
-
- private:
-  static void SecretCallback(PRFileDesc* fd, PRUint16 epoch,
-                             SSLSecretDirection dir, PK11SymKey* secret,
-                             void* arg) {
-    auto self = static_cast<TlsSendCipherSpecCapturer*>(arg);
-    std::cerr << self->agent_->role_str() << ": capture " << dir
-              << " secret for epoch " << epoch << std::endl;
-
-    if (dir == ssl_secret_read) {
-      return;
-    }
-
-    SSLPreliminaryChannelInfo preinfo;
-    EXPECT_EQ(SECSuccess,
-              SSL_GetPreliminaryChannelInfo(self->agent_->ssl_fd(), &preinfo,
-                                            sizeof(preinfo)));
-    EXPECT_EQ(sizeof(preinfo), preinfo.length);
-    EXPECT_TRUE(preinfo.valuesSet & ssl_preinfo_cipher_suite);
-
-    SSLCipherSuiteInfo cipherinfo;
-    EXPECT_EQ(SECSuccess,
-              SSL_GetCipherSuiteInfo(preinfo.cipherSuite, &cipherinfo,
-                                     sizeof(cipherinfo)));
-    EXPECT_EQ(sizeof(cipherinfo), cipherinfo.length);
-
-    auto spec = std::make_shared<TlsCipherSpec>(true, epoch);
-    EXPECT_TRUE(spec->SetKeys(&cipherinfo, secret));
-    self->send_cipher_specs_.push_back(spec);
-  }
-
-  std::shared_ptr<TlsAgent> agent_;
-  std::vector<std::shared_ptr<TlsCipherSpec>> send_cipher_specs_;
-};
-
 TEST_F(TlsConnectDatagram13, SendOutOfOrderAppWithHandshakeKey) {
   StartConnect();
   // Capturing secrets means that we can't use decrypting filters on the client.
@@ -684,8 +640,10 @@ TEST_F(TlsConnectDatagram13, SendOutOfOrderAppWithHandshakeKey) {
   auto spec = capturer.spec(0);
   ASSERT_NE(nullptr, spec.get());
   ASSERT_EQ(2, spec->epoch());
-  ASSERT_TRUE(client_->SendEncryptedRecord(spec, 0x0002000000000002,
-                                           ssl_ct_application_data,
+
+  uint8_t dtls13_ct = kCtDtlsCiphertext | kCtDtlsCiphertext16bSeqno |
+                      kCtDtlsCiphertextLengthPresent;
+  ASSERT_TRUE(client_->SendEncryptedRecord(spec, 0x0002000000000002, dtls13_ct,
                                            DataBuffer(buf, sizeof(buf))));
 
   // Now have the server consume the bogus message.
@@ -844,7 +802,7 @@ static void GetCipherAndLimit(uint16_t version, uint16_t* cipher,
     // a reasonable amount of time.
     *cipher = TLS_CHACHA20_POLY1305_SHA256;
     // Assume that we are starting with an expected sequence number of 0.
-    *limit = (1ULL << 29) - 1;
+    *limit = (1ULL << 15) - 1;
   }
 }
 
@@ -866,14 +824,14 @@ TEST_P(TlsConnectDatagram, MissLotsOfPackets) {
   SendReceive();
 }
 
-// Send a sequence number of 0xfffffffd and it should be interpreted as that
+// Send a sequence number of 0xfffd and it should be interpreted as that
 // (and not -3 or UINT64_MAX - 2).
 TEST_F(TlsConnectDatagram13, UnderflowSequenceNumber) {
   Connect();
   // This is only valid if short headers are disabled.
   client_->SetOption(SSL_ENABLE_DTLS_SHORT_HEADER, PR_FALSE);
   EXPECT_EQ(SECSuccess,
-            SSLInt_AdvanceWriteSeqNum(client_->ssl_fd(), (1ULL << 30) - 3));
+            SSLInt_AdvanceWriteSeqNum(client_->ssl_fd(), (1ULL << 16) - 3));
   SendReceive();
 }
 
@@ -918,9 +876,13 @@ class TlsReplaceFirstRecordWithJunk : public TlsRecordFilter {
       return KEEP;
     }
     replaced_ = true;
-    TlsRecordHeader out_header(header.variant(), header.version(),
-                               ssl_ct_application_data,
-                               header.sequence_number());
+
+    uint8_t dtls13_ct = kCtDtlsCiphertext | kCtDtlsCiphertext16bSeqno |
+                        kCtDtlsCiphertextLengthPresent;
+    TlsRecordHeader out_header(
+        header.variant(), header.version(),
+        is_dtls13() ? dtls13_ct : ssl_ct_application_data,
+        header.sequence_number());
 
     static const uint8_t junk[] = {1, 2, 3, 4};
     *offset = out_header.Write(output, *offset, DataBuffer(junk, sizeof(junk)));
@@ -943,15 +905,15 @@ TEST_P(TlsConnectDatagram, ReplaceFirstClientRecordWithApplicationData) {
   Connect();
 }
 
-INSTANTIATE_TEST_CASE_P(Datagram12Plus, TlsConnectDatagram12Plus,
-                        TlsConnectTestBase::kTlsV12Plus);
-INSTANTIATE_TEST_CASE_P(DatagramPre13, TlsConnectDatagramPre13,
-                        TlsConnectTestBase::kTlsV11V12);
-INSTANTIATE_TEST_CASE_P(DatagramDrop13, TlsDropDatagram13,
-                        ::testing::Values(true, false));
-INSTANTIATE_TEST_CASE_P(DatagramReorder13, TlsReorderDatagram13,
-                        ::testing::Values(true, false));
-INSTANTIATE_TEST_CASE_P(DatagramFragment13, TlsFragmentationAndRecoveryTest,
-                        ::testing::Values(true, false));
+INSTANTIATE_TEST_SUITE_P(Datagram12Plus, TlsConnectDatagram12Plus,
+                         TlsConnectTestBase::kTlsV12Plus);
+INSTANTIATE_TEST_SUITE_P(DatagramPre13, TlsConnectDatagramPre13,
+                         TlsConnectTestBase::kTlsV11V12);
+INSTANTIATE_TEST_SUITE_P(DatagramDrop13, TlsDropDatagram13,
+                         ::testing::Values(true, false));
+INSTANTIATE_TEST_SUITE_P(DatagramReorder13, TlsReorderDatagram13,
+                         ::testing::Values(true, false));
+INSTANTIATE_TEST_SUITE_P(DatagramFragment13, TlsFragmentationAndRecoveryTest,
+                         ::testing::Values(true, false));
 
 }  // namespace nss_test

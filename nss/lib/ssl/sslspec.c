@@ -7,6 +7,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ssl.h"
+#include "sslexp.h"
+#include "sslimpl.h"
 #include "sslproto.h"
 #include "pk11func.h"
 #include "secitem.h"
@@ -121,7 +123,6 @@ ssl_FindCipherSpecByEpoch(sslSocket *ss, SSLSecretDirection direction,
          cur_p != &ss->ssl3.hs.cipherSpecs;
          cur_p = PR_NEXT_LINK(cur_p)) {
         ssl3CipherSpec *spec = (ssl3CipherSpec *)cur_p;
-
         if (spec->epoch != epoch) {
             continue;
         }
@@ -227,6 +228,7 @@ ssl_FreeCipherSpec(ssl3CipherSpec *spec)
     }
     PK11_FreeSymKey(spec->masterSecret);
     ssl_DestroyKeyMaterial(&spec->keyMaterial);
+    ssl_DestroyMaskingContextInner(spec->maskContext);
 
     PORT_ZFree(spec, sizeof(*spec));
 }

@@ -68,7 +68,7 @@ dtls_TLSVersionToDTLSVersion(SSL3ProtocolVersion tlsv)
         return SSL_LIBRARY_VERSION_DTLS_1_3_WIRE;
     }
 
-    /* Anything other than TLS 1.1 or 1.2 is an error, so return
+    /* Anything else is an error, so return
      * the invalid version 0xffff. */
     return 0xffff;
 }
@@ -270,12 +270,6 @@ SECStatus
 dtls_HandleHandshake(sslSocket *ss, DTLSEpoch epoch, sslSequenceNumber seqNum,
                      sslBuffer *origBuf)
 {
-    /* XXX OK for now.
-     * This doesn't work properly with asynchronous certificate validation.
-     * because that returns a WOULDBLOCK error. The current DTLS
-     * applications do not need asynchronous validation, but in the
-     * future we will need to add this.
-     */
     sslBuffer buf = *origBuf;
     SECStatus rv = SECSuccess;
     PRBool discarded = PR_FALSE;
@@ -310,7 +304,8 @@ dtls_HandleHandshake(sslSocket *ss, DTLSEpoch epoch, sslSequenceNumber seqNum,
         if (message_length > MAX_HANDSHAKE_MSG_LEN) {
             (void)ssl3_DecodeError(ss);
             PORT_SetError(SSL_ERROR_RX_MALFORMED_HANDSHAKE);
-            return SECFailure;
+            rv = SECFailure;
+            goto loser;
         }
 #undef MAX_HANDSHAKE_MSG_LEN
 
@@ -364,7 +359,7 @@ dtls_HandleHandshake(sslSocket *ss, DTLSEpoch epoch, sslSequenceNumber seqNum,
 
             rv = dtls_HandleHandshakeMessage(ss, buf.buf,
                                              buf.len == fragment_length);
-            if (rv == SECFailure) {
+            if (rv != SECSuccess) {
                 goto loser;
             }
         } else {
@@ -473,7 +468,7 @@ dtls_HandleHandshake(sslSocket *ss, DTLSEpoch epoch, sslSequenceNumber seqNum,
                     rv = dtls_HandleHandshakeMessage(ss, ss->ssl3.hs.msg_body.buf,
                                                      buf.len == fragment_length);
 
-                    if (rv == SECFailure) {
+                    if (rv != SECSuccess) {
                         goto loser;
                     }
                 }
@@ -485,7 +480,7 @@ dtls_HandleHandshake(sslSocket *ss, DTLSEpoch epoch, sslSequenceNumber seqNum,
     }
 
     // This should never happen, but belt and suspenders.
-    if (rv == SECFailure) {
+    if (rv != SECSuccess) {
         PORT_Assert(0);
         goto loser;
     }
@@ -500,14 +495,10 @@ dtls_HandleHandshake(sslSocket *ss, DTLSEpoch epoch, sslSequenceNumber seqNum,
     if (rv != SECSuccess) {
         goto loser;
     }
-
     rv = dtls13_SetupAcks(ss);
 
 loser:
     origBuf->len = 0; /* So ssl3_GatherAppDataRecord will keep looping. */
-
-    /* XXX OK for now. In future handle rv == SECWouldBlock safely in order
-     * to deal with asynchronous certificate verification */
     return rv;
 }
 
@@ -585,8 +576,9 @@ dtls_FlushHandshakeMessages(sslSocket *ss, PRInt32 flags)
     PORT_Assert(ss->opt.noLocks || ssl_HaveXmitBufLock(ss));
 
     rv = dtls_StageHandshakeMessage(ss);
-    if (rv != SECSuccess)
+    if (rv != SECSuccess) {
         return rv;
+    }
 
     if (!(flags & ssl_SEND_FLAG_FORCE_INTO_BUFFER)) {
         rv = dtls_TransmitMessageFlight(ss);
@@ -620,7 +612,7 @@ dtls_RetransmitTimerExpiredCb(sslSocket *ss)
     if (!(ss->ssl3.hs.rtRetries % 3)) {
         /* If one of the messages was potentially greater than > MTU,
          * then downgrade. Do this every time we have retransmitted a
-         * message twice, per RFC 6347 Sec. 4.1.1 */
+         * message twice, per RFC 9147 Sec. 4.4 */
         dtls_SetMTU(ss, ss->ssl3.hs.maxMessageSent - 1);
     }
 
@@ -847,7 +839,6 @@ dtls_TransmitMessageFlight(sslSocket *ss)
          * to full.  This produces fewer records, but it means that messages can
          * be quite fragmented.  Adding an extra flush here would push new
          * messages into new records and reduce fragmentation. */
-
         if (msg->type == ssl_ct_handshake) {
             rv = dtls_FragmentHandshake(ss, msg);
         } else {
@@ -1132,7 +1123,7 @@ dtls_HandleHelloVerifyRequest(sslSocket *ss, PRUint8 *b, PRUint32 length)
      * match (Section 4.2.1) in the HelloVerifyRequest and the
      * ServerHello.
      *
-     * RFC 6347 suggests (SHOULD) that servers always use 1.0 in
+     * RFC 6347 (Section 4.2.1) suggests (SHOULD) that servers always use 1.0 in
      * HelloVerifyRequest and allows the versions not to match,
      * especially when 1.2 is being negotiated.
      *
@@ -1335,41 +1326,28 @@ dtls_IsLongHeader(SSL3ProtocolVersion version, PRUint8 firstOctet)
 #endif
 }
 
-DTLSEpoch
-dtls_ReadEpoch(const ssl3CipherSpec *crSpec, const PRUint8 *hdr)
+PRBool
+dtls_IsDtls13Ciphertext(SSL3ProtocolVersion version, PRUint8 firstOctet)
 {
-    DTLSEpoch epoch;
-    DTLSEpoch maxEpoch;
-    DTLSEpoch partial;
+    // Allow no version in case we haven't negotiated one yet.
+    return (version == 0 || version >= SSL_LIBRARY_VERSION_TLS_1_3) &&
+           (firstOctet & 0xe0) == 0x20;
+}
 
-    if (dtls_IsLongHeader(crSpec->version, hdr[0])) {
+DTLSEpoch
+dtls_ReadEpoch(const SSL3ProtocolVersion version, const DTLSEpoch specEpoch, const PRUint8 *hdr)
+{
+    if (dtls_IsLongHeader(version, hdr[0])) {
         return ((DTLSEpoch)hdr[3] << 8) | hdr[4];
     }
 
-    /* A lot of how we recover the epoch here will depend on how we plan to
-     * manage KeyUpdate.  In the case that we decide to install a new read spec
-     * as a KeyUpdate is handled, crSpec will always be the highest epoch we can
-     * possibly receive.  That makes this easier to manage. */
-    if ((hdr[0] & 0xe0) == 0x20) {
-        /* Use crSpec->epoch, or crSpec->epoch - 1 if the last bit differs. */
-        if (((hdr[0] >> 4) & 1) == (crSpec->epoch & 1)) {
-            return crSpec->epoch;
-        }
-        return crSpec->epoch - 1;
-    }
-
-    /* dtls_GatherData should ensure that this works. */
-    PORT_Assert(hdr[0] == ssl_ct_application_data);
-
-    /* This uses the same method as is used to recover the sequence number in
-     * dtls_ReadSequenceNumber, except that the maximum value is set to the
-     * current epoch. */
-    partial = hdr[1] >> 6;
-    maxEpoch = PR_MAX(crSpec->epoch, 3);
-    epoch = (maxEpoch & 0xfffc) | partial;
-    if (partial > (maxEpoch & 0x03)) {
+    DTLSEpoch epoch = (specEpoch & ~3) | (hdr[0] & 3);
+    /* The epoch cannot be higher than the current read epoch,
+        though guard against underflow. */
+    if (epoch > specEpoch && epoch > 4) {
         epoch -= 4;
     }
+
     return epoch;
 }
 
@@ -1398,20 +1376,15 @@ dtls_ReadSequenceNumber(const ssl3CipherSpec *spec, const PRUint8 *hdr)
      * sequence number is replaced.  If that causes the value to exceed the
      * maximum, subtract an entire range.
      */
-    if ((hdr[0] & 0xe0) == 0x20) {
-        /* A 12-bit sequence number. */
-        cap = spec->nextSeqNum + (1ULL << 11);
-        partial = (((sslSequenceNumber)hdr[0] & 0xf) << 8) |
-                  (sslSequenceNumber)hdr[1];
-        mask = (1ULL << 12) - 1;
+    if (hdr[0] & 0x08) {
+        cap = spec->nextSeqNum + (1ULL << 15);
+        partial = (((sslSequenceNumber)hdr[1]) << 8) |
+                  (sslSequenceNumber)hdr[2];
+        mask = (1ULL << 16) - 1;
     } else {
-        /* A 30-bit sequence number. */
-        cap = spec->nextSeqNum + (1ULL << 29);
-        partial = (((sslSequenceNumber)hdr[1] & 0x3f) << 24) |
-                  ((sslSequenceNumber)hdr[2] << 16) |
-                  ((sslSequenceNumber)hdr[3] << 8) |
-                  (sslSequenceNumber)hdr[4];
-        mask = (1ULL << 30) - 1;
+        cap = spec->nextSeqNum + (1ULL << 7);
+        partial = (sslSequenceNumber)hdr[1];
+        mask = (1ULL << 8) - 1;
     }
     seqNum = (cap & ~mask) | partial;
     /* The second check prevents the value from underflowing if we get a large
